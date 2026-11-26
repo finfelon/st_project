@@ -14,7 +14,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="회귀분석: 일조량과 K-Pop 우울도", page_icon="📈", layout="wide")
+st.set_page_config(page_title="회귀분석: 일조량과 K-Pop 우울도", layout="wide")
 
 
 def get_2026_kpop_chart():
@@ -122,8 +122,103 @@ def load_or_create_data():
 
 
 def main():
-    st.title("📈 회귀분석: 일조량이 K-Pop 차트 우울도에 미치는 영향")
-    st.write("독립변수(X: 일조시간·기온·강수량)로 종속변수(Y: K-Pop 우울도 점수)를 예측하는 **회귀분석(Regression)** 대시보드입니다.")
+    st.title("회귀분석: 일조량이 K-Pop 차트 우울도에 미치는 영향")
+    st.write("독립변수(X: 일조시간, 기온, 강수량)로 종속변수(Y: K-Pop 우울도 점수)를 예측하는 회귀분석 대시보드입니다.")
 
     df, is_real = load_or_create_data()
-    chart_df = get_2026_kpop
+    chart_df = get_2026_kpop_chart()
+
+    features = ["sunshine_hours", "avg_temp", "precipitation", "temp_range"]
+    target = "depression_score"
+    df["precipitation"] = df["precipitation"].fillna(0)
+    df = df.dropna(subset=features + [target]).copy()
+
+    X = df[features]
+    y = df[target]
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # 1. 단순 선형 회귀 방정식 및 산점도
+    st.subheader("1. 회귀 방정식과 산점도: 일조시간(X) -> K-Pop 우울도(Y)")
+
+    simple_lr = LinearRegression()
+    simple_lr.fit(X_train[["sunshine_hours"]], y_train)
+    slope = simple_lr.coef_[0]
+    intercept = simple_lr.intercept_
+
+    st.info(f"회귀 방정식:  Y(우울도) = {slope:.5f} * X(일조시간) + {intercept:.4f}")
+    st.write(f"해석: 회귀 기울기가 {slope:.5f}이므로, 일조시간이 1시간 늘어날수록 K-Pop 차트 우울도는 평균 {abs(slope):.5f}점 감소합니다.")
+
+    scatter_df = df[["sunshine_hours", "depression_score"]].copy()
+    scatter_df.columns = ["일조시간(시간)", "K-Pop 우울도"]
+    st.scatter_chart(scatter_df, x="일조시간(시간)", y="K-Pop 우울도")
+
+    # 2. 기준선 vs 후보 회귀 모델 비교
+    st.subheader("2. 기준선 대비 후보 회귀 모델 성능 비교 (RMSE, MAE, R2)")
+
+    models = {
+        "기준선(단순 평균 찍기)": DummyRegressor(strategy="mean"),
+        "단순 선형 회귀 (일조시간 1개)": LinearRegression(),
+        "다중 선형 회귀 (기상변수 4개)": LinearRegression(),
+        "다항 회귀 (2차 곡선 모델)": make_pipeline(PolynomialFeatures(degree=2), LinearRegression()),
+        "랜덤 포레스트 회귀 (비선형)": RandomForestRegressor(n_estimators=100, max_depth=5, random_state=42)
+    }
+
+    results = []
+    trained_models = {}
+
+    for name, model in models.items():
+        if name == "단순 선형 회귀 (일조시간 1개)":
+            model.fit(X_train[["sunshine_hours"]], y_train)
+            preds = model.predict(X_test[["sunshine_hours"]])
+        else:
+            model.fit(X_train, y_train)
+            preds = model.predict(X_test)
+
+        rmse = np.sqrt(mean_squared_error(y_test, preds))
+        mae = mean_absolute_error(y_test, preds)
+        r2 = r2_score(y_test, preds)
+
+        results.append({
+            "회귀 모델명": name,
+            "RMSE(오차)": round(rmse, 5),
+            "MAE(오차)": round(mae, 5),
+            "R2(설명력)": round(r2, 4)
+        })
+        trained_models[name] = model
+
+    st.dataframe(pd.DataFrame(results), use_container_width=True)
+
+    # 3. 실제 우울도 vs 회귀 모델 예측 우울도 비교
+    st.subheader("3. 실제 우울도(Y) vs 다중 선형 회귀 예측값 비교")
+    multi_lr = trained_models["다중 선형 회귀 (기상변수 4개)"]
+    y_pred_test = multi_lr.predict(X_test)
+
+    pred_compare_df = pd.DataFrame({
+        "실제 K-Pop 우울도": y_test.values[:30],
+        "회귀 모델 예측 우울도": np.round(y_pred_test[:30], 4)
+    })
+    st.line_chart(pred_compare_df)
+
+    # 4. 2026년 1월~10월 월별 비교 & K-Pop 순위
+    st.subheader("4. 2026년 1월~10월 월별 일조량 비교 및 스포티파이 K-Pop 순위")
+    df["month_label"] = pd.to_datetime(df["date"]).dt.strftime("%m월")
+    months_order = [f"{m:02d}월" for m in range(1, 11)]
+    monthly_df = df.groupby("month_label")[["sunshine_hours", "mean_valence", "depression_score"]].mean().round(3).reindex(months_order)
+    monthly_df.columns = ["평균 일조시간(hr)", "K-Pop 밝기(Valence)", "K-Pop 우울도(1-Valence)"]
+
+    st.dataframe(monthly_df.T, use_container_width=True)
+    st.dataframe(chart_df, use_container_width=True)
+
+    # 사이드바 예측기
+    st.sidebar.header("회귀 모델 실시간 예측기")
+    in_sun = st.sidebar.slider("일조시간 (시간)", 0.0, 14.0, 6.5)
+    in_temp = st.sidebar.slider("평균기온 (°C)", -15.0, 35.0, 15.0)
+    in_rain = st.sidebar.slider("일강수량 (mm)", 0.0, 100.0, 0.0)
+    in_range = st.sidebar.slider("일교차 (°C)", 1.0, 20.0, 9.0)
+
+    pred_dep = multi_lr.predict([[in_sun, in_temp, in_rain, in_range]])[0]
+    st.sidebar.metric("회귀 모델 예측 우울도", f"{pred_dep:.4f} 점")
+
+
+if __name__ == "__main__":
+    main()
